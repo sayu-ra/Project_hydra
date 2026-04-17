@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Project Hydra — Cyber-Deception Honeypot
+  Ghost Nodes + Vaccine Hub + Free-Tier safe configuration
+
+# ── Global Lambda defaults (free-tier safe) ───────────────────────────────────
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 3            # Hard stop prevents runaway costs
+    MemorySize: 128       # Minimum footprint
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref HydraVaccineHub
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+Resources:
+
+  # FR-02 ── DynamoDB table (Provisioned 1/1 = always free) ──────────────────
+  HydraVaccineHub:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Hydra_Vaccine_Hub
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      AttributeDefinitions:
+        - AttributeName: ip_address
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ip_address
+          KeyType: HASH
+
+  # FR-01 ── Ghost Node Lambda (handles ALL paths including root) ──────────────
+  GhostNodeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: hydra-ghost-node
+      Handler: lambda_function.lambda_handler
+      CodeUri: ./lambda/
+      Description: "Hydra Ghost Node — recursive deception + vaccine enforcement"
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref HydraVaccineHub
+          NODE_ID:    ghost-node-alpha
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref HydraVaccineHub
+      Events:
+        # Catch every sub-path  (e.g. /admin/credentials/backups/...)
+        AnyProxyPath:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HydraHttpApi
+            Path:  "/{proxy+}"
+            Method: ANY
+        # Catch the bare root  (/)
+        RootPath:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HydraHttpApi
+            Path:  "/"
+            Method: ANY
+
+  # FR-03 ── HTTP API Gateway (HTTP type = cheaper than REST, within free tier) ─
+  HydraHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: "$default"
+      Description: "Hydra Ghost Node API Gateway"
+
+  # ── IAM: Read-only user for the Streamlit dashboard ────────────────────────
+  HydraDashboardUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: hydra-dashboard-reader
+      Policies:
+        - PolicyName: HydraDashboardReadOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:DescribeTable
+                Resource: !GetAtt HydraVaccineHub.Arn
+
+  HydraDashboardAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref HydraDashboardUser
+
+# ── Outputs ────────────────────────────────────────────────────────────────────
+Outputs:
+
+  HoneypotURL:
+    Description: "🪤 Drop this URL anywhere to trap attackers"
+    Value: !Sub "https://${HydraHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  DashboardAccessKeyId:
+    Description: "AWS_ACCESS_KEY_ID for Streamlit dashboard (read-only)"
+    Value: !Ref HydraDashboardAccessKey
+
+  DashboardSecretKey:
+    Description: "AWS_SECRET_ACCESS_KEY for Streamlit dashboard (read-only)"
+    Value: !GetAtt HydraDashboardAccessKey.SecretAccessKey
+
+  DynamoTableName:
+    Description: "DynamoDB table name"
+    Value: !Ref HydraVaccineHub
+
+  AWSRegion:
+    Description: "Deployment region"
+    Value: !Ref AWS::Region
